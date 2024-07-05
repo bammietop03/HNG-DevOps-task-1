@@ -1,78 +1,94 @@
 #!/bin/bash
 
-# create_users.sh
-# This script reads a text file containing usernames and groups, creates users and groups,
-# sets up home directories, generates random passwords, and logs actions.
-# Usage: ./create_users.sh <text-file>
-
-
-# Check if the script is run as root
-if [[ "$EUID" -ne 0 ]]; then
-    echo "This script must be run as root." >&2
-    exit 1
-fi
-
-# Check if a file argument is provided
-if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 <text-file>" >&2
-    exit 1
-fi
-
-
-# Input file containing USERNAMEs and GROUPS (format: user;GROUPS)
-CONTENT_FILE="$1"
-PASSWORD_FILE="/var/secure/user_passwords.csv"
 LOG_FILE="/var/log/user_management.log"
+PASSWORD_FILE="/var/secure/user_passwords.txt"
 
-# Check if the file exists
-if [[ ! -f "$CONTENT_FILE" ]]; then
-    echo "File $CONTENT_FILE does not exist." >&2
-    exit 1
-fi
+# Ensure /var/log directory and log file exists and has appropriate permissions
+sudo touch $LOG_FILE
+sudo chown root:root $LOG_FILE
+sudo chmod 644 $LOG_FILE
 
+# Ensure /var/secure directory exists with appropriate permissions
+sudo mkdir -p /var/secure
+sudo touch $PASSWORD_FILE
+sudo chown root:root /var/secure
+sudo chmod 700 /var/secure
+sudo chown root:root $PASSWORD_FILE
+sudo chmod 600 $PASSWORD_FILE
 
-# Creating log file if it doesn't exist
-touch "$LOG_FILE"
-mkdir -p /var/secure
-chown -R $(whoami) /var/secure
-
-# Function to generate a random password
-generate_password() {
-     tr -dc 'A-Za-z0-9!@#$%^&*()' < /dev/urandom | head -c 8
+# Log function
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | sudo tee -a $LOG_FILE
 }
 
-# Running through the list of users in the txt file
-while IFS=';' read -r USERNAME GROUPS; do
-    # Creating user
-    useradd -m -s /bin/bash "$USERNAME" &>> "$LOG_FILE"
+# Check if the script is run with the correct number of arguments
+if [ "$#" -ne 1 ]; then
+    echo "Usage: $0 <name-of-text-file>"
+    exit 1
+fi
 
-    # Creating group with the same name as the USERNAME
-    groupadd "$USERNAME" &>> "$LOG_FILE"
+INPUT_FILE=$1
 
-    # Adding user to personal group
-    usermod -aG "$USERNAME" "$USERNAME" &>> "$LOG_FILE"
+# Read the input file and process each line
+while IFS=';' read -r username groups; do
+    # Trim whitespace
+    username=$(echo $username | xargs)
+    groups=$(echo $groups | xargs)
 
-    # checking to see if user has additional GROUPS 
-    IFS=',' read -ra group_array <<< "$GROUPS"
-    for group in "${group_array[@]}"; do
-        groupadd "$group" &>> "$LOG_FILE"
-        usermod -aG "$group" "$USERNAME" &>> "$LOG_FILE"
+    # Skip empty username lines
+    if [ -z "$username" ]; then
+        continue
+    fi
+
+    # Create user with personal group
+    if id -u "$username" >/dev/null 2>&1; then
+        log "User $username already exists."
+    else
+        if sudo useradd -m -s /bin/bash "$username"; then
+            log "User $username created."
+        else
+            log "Failed to create user $username."
+            continue
+        fi
+    fi
+
+    # Create and assign groups
+    IFS=',' read -ra GROUP_ARRAY <<< "$groups"
+    for group in "${GROUP_ARRAY[@]}"; do
+        group=$(echo $group | xargs)
+        if [ -z "$group" ]; then
+            continue
+        fi
+        if ! getent group "$group" >/dev/null 2>&1; then
+            if sudo groupadd "$group"; then
+                log "Group $group created."
+            else
+                log "Failed to create group $group."
+                continue
+            fi
+        fi
+        if sudo usermod -aG "$group" "$username"; then
+            log "User $username added to group $group."
+        else
+            log "Failed to add user $username to group $group."
+        fi
     done
 
-    # Generating and set password
-    password=$(generate_password)
-    echo "$USERNAME:$password" | chpasswd &>> "$LOG_FILE"
+    # Generate and set password
+    PASSWORD=$(openssl rand -base64 12)
+    if echo "$username:$PASSWORD" | sudo chpasswd; then
+        echo "$username,$PASSWORD" | sudo tee -a $PASSWORD_FILE
+        log "Password for user $username generated and stored securely."
+    else
+        log "Failed to set password for user $username."
+    fi
 
-    # Log user creation details
-    echo "User '$USERNAME' created with GROUPS: $GROUPS" >> "$LOG_FILE"
+    # Set home directory permissions
+    if sudo chmod 700 /home/$username && sudo chown $username:$username /home/$username; then
+        log "Permissions set for home directory of user $username."
+    else
+        log "Failed to set permissions for home directory of user $username."
+    fi
+done < "$INPUT_FILE"
 
-    # Append USERNAME and password to the secure password file
-    echo "$USERNAME,$password" >> "$PASSWORD_FILE"
-done < "$CONTENT_FILE"
-
-# Set permissions for password file
-chmod 600 "$PASSWORD_FILE"
-
-echo "User creation completed." 
-echo "Detailed logs stored in $LOG_FILE."
-echo "Passwords is stored in $PASSWORD_FILE."
+log "User creation and setup completed successfully."
