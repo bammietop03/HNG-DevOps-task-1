@@ -1,4 +1,4 @@
-# Project in devops-stage-2 repo
+Project in [devops-stage-2](https://github.com/bammietop03/devops-stage-2)
 
 ## DevOps Stage 2: Dockerized Full Stack Web Application Deployment
 In this stage, you’ll deploy a provided full stack web application (React frontend and FastAPI + PostgreSQL backend) using Docker containers and proxy both services to run on the same port using Traefik or Nginx Proxy Manager.
